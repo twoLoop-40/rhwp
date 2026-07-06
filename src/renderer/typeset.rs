@@ -1172,13 +1172,20 @@ impl FormattedParagraph {
     /// 특정 줄의 advance 높이 (콘텐츠 + 줄간격)
     #[inline]
     fn line_advance(&self, line_idx: usize) -> f64 {
+        // KeepGong hotfix (2026-07-05): 연속 페이지 재배치 시 기록된 줄 인덱스가 새 레이아웃
+        // 줄 수를 넘는 off-by-one(len 31, index 31 실측 panic) — 방어적 0.0 (렌더 지속).
+        if line_idx >= self.line_heights.len() {
+            return 0.0;
+        }
         self.line_heights[line_idx] + self.line_spacings[line_idx]
     }
 
     /// 줄 범위의 advance 합계
     fn line_advances_sum(&self, range: std::ops::Range<usize>) -> f64 {
-        range
-            .into_iter()
+        // KeepGong hotfix (2026-07-05): range 를 실제 줄 수로 클램프 (위와 동일 panic 방지).
+        let end = range.end.min(self.line_heights.len());
+        let start = range.start.min(end);
+        (start..end)
             .map(|i| self.line_heights[i] + self.line_spacings[i])
             .sum()
     }
