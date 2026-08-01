@@ -2431,13 +2431,28 @@ impl FormattedParagraph {
     /// 특정 줄의 advance 높이 (콘텐츠 + 줄간격)
     #[inline]
     fn line_advance(&self, line_idx: usize) -> f64 {
+        // KeepGong hotfix (2026-07-05, v0.8.2 재적용): 연속 페이지 재배치 시 기록된 줄
+        // 인덱스가 새 레이아웃 줄 수를 넘는 off-by-one(len 31, index 31 실측 panic) —
+        // 방어적 0.0 (렌더 지속).
+        if line_idx >= self.line_count() {
+            return 0.0;
+        }
         self.line_heights[line_idx] + self.line_spacings[line_idx]
+    }
+
+    /// 두 벡터가 함께 인덱싱되는 자리의 안전 상한 (구성은 zip 이라 보통 같다).
+    #[inline]
+    fn line_count(&self) -> usize {
+        self.line_heights.len().min(self.line_spacings.len())
     }
 
     /// 줄 범위의 advance 합계
     fn line_advances_sum(&self, range: std::ops::Range<usize>) -> f64 {
-        range
-            .into_iter()
+        // KeepGong hotfix (2026-07-05, v0.8.2 재적용): range 를 실제 줄 수로 클램프
+        // (위와 동일 panic 방지).
+        let end = range.end.min(self.line_count());
+        let start = range.start.min(end);
+        (start..end)
             .map(|i| self.line_heights[i] + self.line_spacings[i])
             .sum()
     }
