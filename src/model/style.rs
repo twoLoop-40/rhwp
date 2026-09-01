@@ -2,6 +2,51 @@
 
 use super::*;
 
+/// HWP 선 굵기 enum: index(0~15) ↔ mm. 한컴 표준 16단계.
+///
+/// 파서(mm→index 최근접)와 직렬화기(index→mm 문자열)가 이 단일 테이블을 공유해
+/// 라운드트립 무손실을 보장한다. 종전엔 파서가 6단계 coarse bucket
+/// (mm≤0.3→1, ≤0.5→2, ≤1.0→3)으로, 직렬화기가 16단계로 달라서 0.4mm→0.15mm,
+/// 0.6mm→0.2mm 처럼 테두리 굵기가 변질됐다(IR index 는 안정이라 diff=0 이지만
+/// 시각적으로 다른 굵기로 출력).
+pub const BORDER_WIDTHS: [(f64, &str); 16] = [
+    (0.1, "0.1"),
+    (0.12, "0.12"),
+    (0.15, "0.15"),
+    (0.2, "0.2"),
+    (0.25, "0.25"),
+    (0.3, "0.3"),
+    (0.4, "0.4"),
+    (0.5, "0.5"),
+    (0.6, "0.6"),
+    (0.7, "0.7"),
+    (1.0, "1.0"),
+    (1.5, "1.5"),
+    (2.0, "2.0"),
+    (3.0, "3.0"),
+    (4.0, "4.0"),
+    (5.0, "5.0"),
+];
+
+/// mm 값에 가장 가까운 [`BORDER_WIDTHS`] 굵기 index(0~15)를 돌려준다(파서용).
+pub fn border_width_index(mm: f64) -> u8 {
+    BORDER_WIDTHS
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| (mm - a.0).abs().total_cmp(&(mm - b.0).abs()))
+        .map(|(i, _)| i as u8)
+        .unwrap_or(0)
+}
+
+/// 굵기 index(0~15)에 대응하는 mm 문자열을 돌려준다(직렬화기용). 범위를 벗어나면
+/// 기본값 "0.1".
+pub fn border_width_mm_str(index: u8) -> &'static str {
+    BORDER_WIDTHS
+        .get(index as usize)
+        .map(|(_, s)| *s)
+        .unwrap_or("0.1")
+}
+
 /// 글꼴 정보 (HWPTAG_FACE_NAME)
 #[derive(Debug, Clone, Default)]
 pub struct Font {
@@ -9,12 +54,34 @@ pub struct Font {
     pub raw_data: Option<Vec<u8>>,
     /// 글꼴 이름
     pub name: String,
-    /// 대체 글꼴 유형 (0: 알 수 없음, 1: TTF, 2: HFT)
+    /// 글꼴 유형 (0: 알 수 없음, 1: TTF, 2: HFT)
     pub alt_type: u8,
     /// 대체 글꼴 이름
     pub alt_name: Option<String>,
+    /// 글꼴 유형 정보 (HWP5 FACE_NAME type info 10바이트)
+    pub type_info: Option<[u8; 10]>,
     /// 기본 글꼴 이름
     pub default_name: Option<String>,
+    /// 대체 글꼴 (HWPX `<hh:substFont>`) — 원본 글꼴 부재 시 대체될 글꼴 정보.
+    /// HWP5 의 `alt_name`/`alt_type` 과 달리 type·임베드 정보를 독립적으로 보존한다.
+    pub subst_font: Option<SubstFont>,
+}
+
+/// 대체 글꼴 (HWPX `<hh:substFont>`)
+///
+/// 4개 속성을 모두 보존해 라운드트립 무손실을 보장한다. `font_type`/`is_embedded`/
+/// `bin_item_id_ref` 는 부모 `<hh:font>` 의 같은 이름 속성과 독립적이다
+/// (예: HFT 글꼴이 TTF 대체 글꼴을 가질 수 있음).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SubstFont {
+    /// 대체 글꼴 이름
+    pub face: String,
+    /// 대체 글꼴 유형 (0: 알 수 없음, 1: TTF, 2: HFT)
+    pub font_type: u8,
+    /// 임베드 여부
+    pub is_embedded: bool,
+    /// 임베드 바이너리 아이템 ID 참조 (비임베드 시 빈 문자열; 항상 존재)
+    pub bin_item_id_ref: String,
 }
 
 /// 글자 모양 (HWPTAG_CHAR_SHAPE)
@@ -79,6 +146,8 @@ pub struct CharShape {
     pub strike_shape: u8,
     /// 커닝 여부 (bit 30)
     pub kerning: bool,
+    /// 글꼴에 어울리는 빈칸 사용 여부 (bit 25)
+    pub use_font_space: bool,
 }
 
 /// CharShape 비교: raw_data 필드 제외 (라운드트립용 원본 바이트는 논리적 동일성과 무관)
@@ -113,6 +182,7 @@ impl PartialEq for CharShape {
             && self.underline_shape == other.underline_shape
             && self.strike_shape == other.strike_shape
             && self.kerning == other.kerning
+            && self.use_font_space == other.use_font_space
     }
 }
 
@@ -223,6 +293,12 @@ pub struct Numbering {
     pub start_number: u16,
     /// 수준별 시작 번호
     pub level_start_numbers: [u32; 7],
+    /// HWPX `<hh:numbering>` 의 자식 `<hh:paraHead>` 영역 원본 XML
+    /// (여는/닫는 태그 사이 그대로). 모델은 7수준만 표현하지만 HWPX 는
+    /// 10수준 + align/useInstWidth/autoIndent/checkable/형식문자열 등을
+    /// 가지므로, 무손실 라운드트립을 위해 원본 구간을 그대로 보존해 splice 한다.
+    /// HWP5 바이너리 경로 등 원본 XML 이 없으면 `None` → 하드코딩 폴백.
+    pub raw_para_heads: Option<String>,
 }
 
 /// 문단 머리 정보 (표 41)
@@ -336,10 +412,15 @@ pub struct Style {
     pub local_name: String,
     /// 영문 스타일 이름
     pub english_name: String,
-    /// 스타일 종류 (0: 문단, 1: 글자)
+    /// 스타일 종류 (0: 문단, 1: 글자) — 표 47/48
     pub style_type: u8,
     /// 다음 스타일 ID
     pub next_style_id: u8,
+    /// [Task #1058 후속] 언어 아이디 (INT16, default 1042=한국어).
+    /// 한컴 spec 표 47 의 next_style_id 다음 필드. 누락 시 ps_id/cs_id 가
+    /// 2 byte 앞당겨져 한컴이 잘못된 ParaShape 적용. footnote-01 의 정답지
+    /// 비교로 입증 — rhwp 의 style record size=28 vs 정답지 size=32 (4 byte 누락).
+    pub lang_id: i16,
     /// 문단 모양 ID 참조
     pub para_shape_id: u16,
     /// 글자 모양 ID 참조
@@ -475,6 +556,8 @@ pub struct GradientFill {
     pub center_y: i16,
     /// 번짐 정도 (0~100)
     pub blur: i16,
+    /// 번짐 중심 (0~100)
+    pub step_center: u8,
     /// 색상 목록
     pub colors: Vec<ColorRef>,
     /// 색상 위치 목록
@@ -587,58 +670,118 @@ impl CharShapeMods {
         let mut cs = base.clone();
         // 수정된 CharShape는 원본 바이트와 달라지므로 raw_data 무효화
         cs.raw_data = None;
-        if let Some(v) = self.bold { cs.bold = v; }
-        if let Some(v) = self.italic { cs.italic = v; }
-        if let Some(v) = self.underline {
-            cs.underline_type = if v { UnderlineType::Bottom } else { UnderlineType::None };
+        if let Some(v) = self.bold {
+            cs.bold = v;
         }
-        if let Some(v) = self.strikethrough { cs.strikethrough = v; }
+        if let Some(v) = self.italic {
+            cs.italic = v;
+        }
+        if let Some(v) = self.underline {
+            cs.underline_type = if v {
+                UnderlineType::Bottom
+            } else {
+                UnderlineType::None
+            };
+        }
+        if let Some(v) = self.strikethrough {
+            cs.strikethrough = v;
+        }
         if let Some(id) = self.font_id {
             // 모든 언어에 동일한 글꼴 ID 적용
             for fid in &mut cs.font_ids {
                 *fid = id;
             }
         }
-        if let Some(v) = self.base_size { cs.base_size = v; }
-        if let Some(v) = self.text_color { cs.text_color = v; }
-        if let Some(v) = self.shade_color { cs.shade_color = v; }
+        if let Some(v) = self.base_size {
+            cs.base_size = v;
+        }
+        if let Some(v) = self.text_color {
+            cs.text_color = v;
+        }
+        if let Some(v) = self.shade_color {
+            cs.shade_color = v;
+        }
         // underline_type이 있으면 underline bool보다 우선
-        if let Some(v) = self.underline_type { cs.underline_type = v; }
-        if let Some(v) = self.underline_color { cs.underline_color = v; }
-        if let Some(v) = self.outline_type { cs.outline_type = v; }
-        if let Some(v) = self.shadow_type { cs.shadow_type = v; }
-        if let Some(v) = self.shadow_color { cs.shadow_color = v; }
-        if let Some(v) = self.shadow_offset_x { cs.shadow_offset_x = v; }
-        if let Some(v) = self.shadow_offset_y { cs.shadow_offset_y = v; }
-        if let Some(v) = self.strike_color { cs.strike_color = v; }
+        if let Some(v) = self.underline_type {
+            cs.underline_type = v;
+        }
+        if let Some(v) = self.underline_color {
+            cs.underline_color = v;
+        }
+        if let Some(v) = self.outline_type {
+            cs.outline_type = v;
+        }
+        if let Some(v) = self.shadow_type {
+            cs.shadow_type = v;
+        }
+        if let Some(v) = self.shadow_color {
+            cs.shadow_color = v;
+        }
+        if let Some(v) = self.shadow_offset_x {
+            cs.shadow_offset_x = v;
+        }
+        if let Some(v) = self.shadow_offset_y {
+            cs.shadow_offset_y = v;
+        }
+        if let Some(v) = self.strike_color {
+            cs.strike_color = v;
+        }
         // subscript/superscript: 상호 배타
         if let Some(v) = self.superscript {
             cs.superscript = v;
-            if v { cs.subscript = false; }
+            if v {
+                cs.subscript = false;
+            }
         }
         if let Some(v) = self.subscript {
             cs.subscript = v;
-            if v { cs.superscript = false; }
+            if v {
+                cs.superscript = false;
+            }
         }
-        if let Some(v) = self.ratios { cs.ratios = v; }
-        if let Some(v) = self.spacings { cs.spacings = v; }
-        if let Some(v) = self.relative_sizes { cs.relative_sizes = v; }
-        if let Some(v) = self.char_offsets { cs.char_offsets = v; }
+        if let Some(v) = self.ratios {
+            cs.ratios = v;
+        }
+        if let Some(v) = self.spacings {
+            cs.spacings = v;
+        }
+        if let Some(v) = self.relative_sizes {
+            cs.relative_sizes = v;
+        }
+        if let Some(v) = self.char_offsets {
+            cs.char_offsets = v;
+        }
         // emboss/engrave: 상호 배타
         if let Some(v) = self.emboss {
             cs.emboss = v;
-            if v { cs.engrave = false; }
+            if v {
+                cs.engrave = false;
+            }
         }
         if let Some(v) = self.engrave {
             cs.engrave = v;
-            if v { cs.emboss = false; }
+            if v {
+                cs.emboss = false;
+            }
         }
-        if let Some(ids) = self.font_ids { cs.font_ids = ids; }
-        if let Some(v) = self.border_fill_id { cs.border_fill_id = v; }
-        if let Some(v) = self.emphasis_dot { cs.emphasis_dot = v; }
-        if let Some(v) = self.underline_shape { cs.underline_shape = v; }
-        if let Some(v) = self.strike_shape { cs.strike_shape = v; }
-        if let Some(v) = self.kerning { cs.kerning = v; }
+        if let Some(ids) = self.font_ids {
+            cs.font_ids = ids;
+        }
+        if let Some(v) = self.border_fill_id {
+            cs.border_fill_id = v;
+        }
+        if let Some(v) = self.emphasis_dot {
+            cs.emphasis_dot = v;
+        }
+        if let Some(v) = self.underline_shape {
+            cs.underline_shape = v;
+        }
+        if let Some(v) = self.strike_shape {
+            cs.strike_shape = v;
+        }
+        if let Some(v) = self.kerning {
+            cs.kerning = v;
+        }
         cs
     }
 }
@@ -667,8 +810,8 @@ pub struct ParaShapeMods {
     pub auto_space_kr_num: Option<bool>,
     pub vertical_align: Option<u8>,
     // 줄바꿈 모드
-    pub english_break_unit: Option<u8>,  // 0=단어, 1=하이픈, 2=글자
-    pub korean_break_unit: Option<u8>,   // 0=어절, 1=글자
+    pub english_break_unit: Option<u8>, // 0=단어, 1=하이픈, 2=글자
+    pub korean_break_unit: Option<u8>,  // 0=어절, 1=글자
     // 탭 설정 탭 속성
     pub tab_def_id: Option<u16>,
     // 번호/글머리표 ID
@@ -676,6 +819,8 @@ pub struct ParaShapeMods {
     // 테두리/배경 탭 속성
     pub border_fill_id: Option<u16>,
     pub border_spacing: Option<[i16; 4]>,
+    pub border_connect: Option<bool>,
+    pub border_ignore_margin: Option<bool>,
 }
 
 impl ParaShapeMods {
@@ -684,17 +829,37 @@ impl ParaShapeMods {
         let mut ps = base.clone();
         // 수정된 ParaShape는 원본 바이트와 달라지므로 raw_data 무효화
         ps.raw_data = None;
-        if let Some(v) = self.alignment { ps.alignment = v; }
-        if let Some(v) = self.line_spacing { ps.line_spacing = v; }
-        if let Some(v) = self.line_spacing_type { ps.line_spacing_type = v; }
-        if let Some(v) = self.indent { ps.indent = v; }
-        if let Some(v) = self.margin_left { ps.margin_left = v; }
-        if let Some(v) = self.margin_right { ps.margin_right = v; }
-        if let Some(v) = self.spacing_before { ps.spacing_before = v; }
-        if let Some(v) = self.spacing_after { ps.spacing_after = v; }
+        if let Some(v) = self.alignment {
+            ps.alignment = v;
+        }
+        if let Some(v) = self.line_spacing {
+            ps.line_spacing = v;
+        }
+        if let Some(v) = self.line_spacing_type {
+            ps.line_spacing_type = v;
+        }
+        if let Some(v) = self.indent {
+            ps.indent = v;
+        }
+        if let Some(v) = self.margin_left {
+            ps.margin_left = v;
+        }
+        if let Some(v) = self.margin_right {
+            ps.margin_right = v;
+        }
+        if let Some(v) = self.spacing_before {
+            ps.spacing_before = v;
+        }
+        if let Some(v) = self.spacing_after {
+            ps.spacing_after = v;
+        }
         // 확장 탭: 구조체 필드 + attr1/attr2 비트 동기화
         fn set_bit(val: &mut u32, bit: u32, on: bool) {
-            if on { *val |= 1 << bit; } else { *val &= !(1 << bit); }
+            if on {
+                *val |= 1 << bit;
+            } else {
+                *val &= !(1 << bit);
+            }
         }
         if let Some(v) = self.head_type {
             ps.head_type = v;
@@ -704,16 +869,30 @@ impl ParaShapeMods {
             ps.para_level = v;
             ps.attr1 = (ps.attr1 & !(0x07 << 25)) | ((v as u32 & 0x07) << 25);
         }
-        if let Some(v) = self.widow_orphan { set_bit(&mut ps.attr1, 16, v); }
-        if let Some(v) = self.keep_with_next { set_bit(&mut ps.attr1, 17, v); }
-        if let Some(v) = self.keep_lines { set_bit(&mut ps.attr1, 18, v); }
-        if let Some(v) = self.page_break_before { set_bit(&mut ps.attr1, 19, v); }
-        if let Some(v) = self.font_line_height { set_bit(&mut ps.attr1, 22, v); }
+        if let Some(v) = self.widow_orphan {
+            set_bit(&mut ps.attr1, 16, v);
+        }
+        if let Some(v) = self.keep_with_next {
+            set_bit(&mut ps.attr1, 17, v);
+        }
+        if let Some(v) = self.keep_lines {
+            set_bit(&mut ps.attr1, 18, v);
+        }
+        if let Some(v) = self.page_break_before {
+            set_bit(&mut ps.attr1, 19, v);
+        }
+        if let Some(v) = self.font_line_height {
+            set_bit(&mut ps.attr1, 22, v);
+        }
         if let Some(v) = self.single_line {
             ps.attr2 = (ps.attr2 & !0x03) | if v { 1 } else { 0 };
         }
-        if let Some(v) = self.auto_space_kr_en { set_bit(&mut ps.attr2, 4, v); }
-        if let Some(v) = self.auto_space_kr_num { set_bit(&mut ps.attr2, 5, v); }
+        if let Some(v) = self.auto_space_kr_en {
+            set_bit(&mut ps.attr2, 4, v);
+        }
+        if let Some(v) = self.auto_space_kr_num {
+            set_bit(&mut ps.attr2, 5, v);
+        }
         if let Some(v) = self.vertical_align {
             ps.attr1 = (ps.attr1 & !(0x03 << 20)) | ((v as u32 & 0x03) << 20);
         }
@@ -723,10 +902,24 @@ impl ParaShapeMods {
         if let Some(v) = self.korean_break_unit {
             ps.attr1 = (ps.attr1 & !(0x01 << 7)) | ((v as u32 & 0x01) << 7);
         }
-        if let Some(v) = self.tab_def_id { ps.tab_def_id = v; }
-        if let Some(v) = self.numbering_id { ps.numbering_id = v; }
-        if let Some(v) = self.border_fill_id { ps.border_fill_id = v; }
-        if let Some(v) = self.border_spacing { ps.border_spacing = v; }
+        if let Some(v) = self.tab_def_id {
+            ps.tab_def_id = v;
+        }
+        if let Some(v) = self.numbering_id {
+            ps.numbering_id = v;
+        }
+        if let Some(v) = self.border_fill_id {
+            ps.border_fill_id = v;
+        }
+        if let Some(v) = self.border_spacing {
+            ps.border_spacing = v;
+        }
+        if let Some(v) = self.border_connect {
+            set_bit(&mut ps.attr1, 28, v);
+        }
+        if let Some(v) = self.border_ignore_margin {
+            set_bit(&mut ps.attr1, 29, v);
+        }
         ps
     }
 }
@@ -734,6 +927,33 @@ impl ParaShapeMods {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn border_width_table_is_a_lossless_bijection() {
+        // 모든 enum index 가 mm 문자열로 나갔다가 최근접 매핑으로 같은 index 로 돌아와야 한다.
+        for (i, (mm, s)) in BORDER_WIDTHS.iter().enumerate() {
+            assert_eq!(border_width_mm_str(i as u8), *s, "index {i} → 문자열");
+            let reparsed: f64 = s.parse().unwrap();
+            assert_eq!(
+                border_width_index(reparsed),
+                i as u8,
+                "{mm}mm 가 index {i} 로 최근접 복원되어야 함"
+            );
+        }
+    }
+
+    #[test]
+    fn border_width_index_fixes_coarse_bucket_regression() {
+        // 종전 coarse bucket 이 변질시키던 실제 값들이 정확히 보존되는지 확인.
+        assert_eq!(border_width_index(0.4), 6); // 종전 2(→"0.15")로 변질
+        assert_eq!(border_width_mm_str(6), "0.4");
+        assert_eq!(border_width_index(0.6), 8); // 종전 3(→"0.2")로 변질
+        assert_eq!(border_width_mm_str(8), "0.6");
+        assert_eq!(border_width_index(0.1), 0);
+        assert_eq!(border_width_mm_str(0), "0.1");
+        // 범위 밖 index 는 기본값.
+        assert_eq!(border_width_mm_str(99), "0.1");
+    }
 
     #[test]
     fn test_char_shape_default() {

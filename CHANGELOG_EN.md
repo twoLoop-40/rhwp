@@ -4,6 +4,320 @@ This document records the major changes of the rhwp project.
 
 > 한국어 버전은 [CHANGELOG.md](CHANGELOG.md) 를 참조하세요.
 
+## [0.7.17] — 2026-06-23
+
+> Patch following v0.7.16 — first OOXML chart render-fidelity work, legacy-shape shapeComment
+> serialization, WASM options-object APIs, many rhwp-studio table/picture/cursor editing fixes,
+> render-authority hardening, and a dependency bump batch. Public APIs remain backward-compatible
+> (positional APIs kept) — PATCH. Browser extension 0.2.6 included.
+
+### API
+- Added options-object variants `*Ex(options_json[, image_data])` for 26 high-arity (7+) WASM
+  public APIs (#1413). Existing positional APIs are kept (backward-compatible); `*Ex` performs
+  the same operation via JSON options, making downstream less fragile to mid-signature changes.
+  Consumer (@rhwp/core) README guidance + consumer edit API manual added (#1445).
+  Convention: `mydocs/manual/wasm_api_options_convention.md`.
+
+### Rendering (charts)
+- Routed 7 of the 27 OOXML chart types whose data was already extracted (4 3D-bar, 1 3D-pie,
+  2 ofPie) to 2D-approximation rendering — removes the "chart (unsupported)" placeholder
+  (#1453, C1a / #1431 Track C).
+- Bar charts now honor `c:grouping` (stacked/percentStacked) — 6 stacked/percent bar types (#1453).
+
+### HWPX save contract (serializer fidelity)
+- Fixed missing `hp:shapeComment` serialization on legacy shapes (ellipse/arc/polygon/curve/
+  chart/ole) routed through `render_common_shape_xml` — round-trip preserved (#1451).
+- Excluded false `ir-diff` differences on tab_extended reserved fields [3,4,5] (#1473).
+
+### Rendering
+- Keep v2 font authority on fallback, expand CanvasKit replay contract guards (#1429/#1447/#1469).
+- TAC picture vs text vertical alignment in table cells (#1352). Reflow on un-inline picture (#1459).
+
+### rhwp-studio
+- Autosave + recovery UI for unsaved documents (#1448). Local-font detection consent (opt-in) (#1328).
+- Page-border preview toggle restore (#1426). Picture insert / inline cursor fidelity (#1452).
+- Table row/column insert/delete regression fix (preserve table height when adding rows/cols right
+  after creation) + Hancom-style unified dialog/shortcuts (#1481).
+- Table-cell drag selection + Hancom-compatible table editing (#1443), cell protection (#493).
+- Block manipulation of size-locked objects (#1436), inline-picture wrap + paragraph border (#1440).
+- Style apply / table caption / format copy (#1470), platform-specific menu shortcut display (#1476).
+
+### Browser extension (0.2.6)
+- Fixed viewer inline-script CSP violation (theme-init.js split) + dark icon asset recovery (#1444).
+- Removed the global side effect of the Chrome `onDeterminingFilename` listener — switched to
+  `onCreated`/`onChanged` observers so other extensions' `download({filename})` subfolder saves
+  are no longer disrupted (#1471).
+
+### Infra
+- Track `Cargo.lock` in git — reproducible builds + stable CI cache keys (#1423, macOS FFI excluded).
+- Dependency bump batch: zip 8.6.0, serde_json 1.0.150, snafu 0.9.1, subsetter 0.2.6,
+  skia-safe 0.99.0, unicode-segmentation 1.13.3, wasm-bindgen-test 0.3.75, @types/chrome 0.2.0
+  (#1461–#1468).
+
+### Contributors
+
+Contributor PRs merged in this cycle (since v0.7.16; GitHub handles, alphabetical):
+
+- @jangster77 (Taesup Jang) — table row/column insert-delete regression (#1481), table-cell drag
+  selection & editing (#1443) / cell protection (#493), TAC picture alignment / size-lock /
+  inline-wrap (#1352/#1436/#1440), autosave recovery (#1448), picture/cursor fidelity (#1452/#1459),
+  style/caption/shortcut (#1470/#1476)
+- @johndoekim — OOXML chart C1a routing + bar stacking (#1453)
+- @oksure (Hyunwoo Park) — exclude false ir-diff on tab_extended reserved fields (#1473)
+- @postmelee — local-font consent (#1328), page-border toggle (#1426), Chrome download
+  interceptor side-effect fix (#1471), PR review workflow docs (#1425)
+- @seo-rii — keep v2 font authority (#1429), expand CanvasKit replay guards (#1447/#1469)
+
+## [0.7.16] — 2026-06-19
+
+> Patch following v0.7.15 — refines the HWPX save contract (serializer fidelity), fixes
+> ClickHere guide-text binding in the Hancom editor, adds a drag-and-drop security gate to
+> rhwp-studio, and lands many rendering/table/picture fixes plus external contributor PRs.
+> Public APIs remain backward-compatible — PATCH.
+
+### HWPX save contract (serializer fidelity)
+- Preserve controls inside cell/text-box subLists, original linesegs, and table/picture/group captions (#1379/#1380/#1387/#1403).
+- Emit secPr page margins and body column (colPr) definitions from the IR instead of template hardcoding (#1388/#1407).
+- Preserve picture size elements (curSz/imgRect/imgDim), MEMO field parameters, shapeComment, borderFill/numbering registration axis, and table pageBreak (#1389/#1391/#1392/#1384/#1409/#1393).
+- Make parser autoNum width consistent, fix newNum slot position (#1382/#1407); add an enum-token surface-format check (#1402).
+- Lossless roundtrip for DocInfo, numbering paraHead, cellzoneList, useKerning/useFontSpace (#1405/#1350), and hp:tc cell field-name parsing (#1401).
+
+### Hancom compatibility
+- Fix the ClickHere guide-text (Direction) command format to match Hancom's reference output — resolves guide text not binding in the Hancom editor (#1434).
+
+### rhwp-studio security & UX
+- Exclude drag-and-drop local file loading from default behavior; require explicit opt-in via a modal confirm dialog before loading (#1439). Works in both extension and web modes.
+- ClickHere form-mode/boundary editing, edit caret/focus, object aspect-ratio lock / size protection, table-cell TAC picture vertical alignment (#1419/#1428/#1430/#1436/#1352/#258).
+- Dark theme support and residual UI contrast cleanup (#1420/#1422). Fix replaceAll save loss, image Shift resize, post table-create F5 handling (#1398/#1400/#1404).
+
+### Rendering
+- Native PDF export API (DocumentCore) + report-only PDF visual diff (#1359). Text IR v2 font-proof gates, exact font replay proof, glyph orientation/transform authority (#1421/#1429/#1312).
+- Endnote height-model measurement SSOT / gate recalibration, official endnote shape model normalization, integral glyph (#1363/#1370/#1410/#1314/#1377); page-area-limited table-cell / rotated-cell picture placement (#1282).
+
+### Other
+- Add a 27-sample chart corpus (OOXML + legacy) verification fixture (#1431, P-1); split endnote dump / sweep verification infra (#1395).
+- Preserve mixed page sizes when printing (#1383); Onsamiro picture wrap / paragraph border alignment (#1441).
+
+### Contributors
+
+External contributor PRs merged in this cycle (after v0.7.15; GitHub handles, alphabetical):
+
+- @Martinel2 — useFontSpace IR field + HWP5/HWPX parser & serializer (#1350)
+- @Mireutale — HWPX table-cell tab/line-break inline serialization, picture effects/shadow roundtrip (#1360/#1349)
+- @jangster77 (Taesup Jang) — endnote shape model normalization, ClickHere form/edit, dark theme, table-cell picture / size protection, Onsamiro alignment (#1410/#1419/#1420/#1427/#1430/#1435/#1437/#1441), verification infra (#1395)
+- @johndoekim — 27-sample chart corpus (#1431 / PR #1432)
+- @msjang (Minseok Jang) — preserve mixed page sizes when printing (#1383)
+- @mrshinds — TAC table host-line spacing (#1376)
+- @oksure (Hyunwoo Park) — replaceAll save loss, createEmpty default section, image resize, hp:tc cell name, post-create F5, caption parse/serialize (#1398/#1399/#1400/#1401/#1404/#1406)
+- @physwkim (Sang Woo Kim) — HWPX lossless roundtrip (DocInfo/cellzoneList/useKerning, etc.) (#1405)
+- @planet6897 (Jaeuk Ryu) — endnote height SSOT/gate, integral glyph, endnote divergence diagnosis/closure (#1314/#1371/#1374/#1377 / PR #1390)
+- @postmelee — rhwp-studio dark-mode residual UI contrast (#1422 / PR #1424)
+- @seo-rii (Seohyun Lee) — renderer baseline sweep, native PDF export API, Text IR v2 font-proof gates (#1312/#1359/#1421/#1429)
+
+## [0.7.15] — 2026-06-06
+
+> Security patch following v0.7.14 — hardens browser-extension service-worker fetch paths,
+> refines equation TAC flow/caret movement, and continues HWPX save-contract stabilization.
+> Public APIs remain backward-compatible — PATCH.
+
+### Security
+- Hardened Chrome/Firefox extension document-fetch paths in the service worker (#1307).
+  - Added message sender validation to separate extension viewer and content-script callers.
+  - Blocked localhost, loopback, link-local, private-network, and internal-host URLs.
+  - Revalidates the final URL after redirects with the same policy.
+  - Uses `credentials: "omit"` for extension-side fetches.
+  - Keeps automatically extracted thumbnail data out of the page DOM.
+- Prepared Chrome/Edge/Firefox extension `0.2.4`: no new permissions and no new external network endpoints.
+
+### Equation and Endnote Flow
+- Improved wrapping and paragraph-indent handling for equation TAC-only lines, and fixed endnote-area caret navigation regressions (#1310).
+- Reduced duplicate stops/skips when moving the caret across forced line breaks and paragraph boundaries around TAC equations (#1308/#1310).
+- Follow-up fixes for endnote equation scripts, continuation spacing, and superscript alignment (#1301/#1303/#1306).
+
+### HWPX Save Contract
+- Fixed hard-coded flip/rotation and missing `isEmbeded` output in HWPX picture serialization (#1309).
+- Preserved HWPX diagonal cell-border `hh:slash` / `hh:backSlash` type values (#1311).
+- Preserved zero-length HWPX field ordering (#1299).
+
+### rhwp-studio and Docs
+- Separated paragraph left-margin and hanging-indent dialog bindings.
+- Improved visual-sweep contributor guidance, including rsvg/font setup (#1292).
+- Expanded CLI analysis/debugging command guides.
+
+### Contributors
+Thanks to Dangel for the security report and validation help, and to all external contributors and
+Dependabot for this patch cycle.
+
+## [0.7.14] — 2026-06-05
+
+> Patch cycle following v0.7.13 (May 26–Jun 5) — focused on endnote (explanation) flow/spacing
+> alignment, equation rendering/layout refinements, in-cell picture editing (insert/copy/hit-test)
+> Hancom parity, HWPX save-contract extensions, and multiple external contributor PRs. Public API
+> stays backward-compatible — PATCH.
+
+### Endnote flow & spacing
+- Aligned compact-endnote question-title gaps (7mm between-notes), multi-line paragraph leading,
+  consecutive inline-equation multi-row merge, and below-separator margins to Hancom
+  (#1240, #1241, #1247, #1255, #1259, #1262, tasks #1245/#1248/#1256/#1257/#1258)
+- Corrected end-of-column line position and overflow in multi-column (EACH_COLUMN) endnote flow
+
+### Equation rendering
+- Script token handling: root/sqrt & relational glued-split, rm+bar(overline) leak, prime/cdots gluing (#1208)
+- Trailing scripts bound to LEFT-RIGHT delimiter groups (`|x|^3`) (#1226)
+- Big-operator (Σ/∏/∫) operand spacing; resolved Hangul compression/overlap on equation lines (#1235, #1223)
+- Restored HWPX endnote/footnote prefixChar marker glyph ('문') (#1202)
+
+### In-cell picture editing — Hancom parity
+- Table + picture insert/toggle/visual/click parity (#1177), in-cell shape object-properties dialog (#1150)
+- Nested-cell picture copy (Ctrl+C) + floating-object paste cascade (#1228)
+- Rectangle-textbox picture click hit-test/properties/insert (#1254), nested-cell paste path preservation (#1207)
+- HWP5 wrap=Square host cursor advance (answer↔question overlap), equation-only cell z-table row compression (#1220, #1225)
+
+### Layout & rendering
+- HWPX curve `<hp:seg>` outline rendering (#1203), textFlow roundtrip preservation (#1213)
+- BehindText/InFrontOfText z-order composition, paper-relative BehindText z-order, master-page textbox numbering (#1163, #1252)
+- Fixed 90°/270° rotated image bbox double-rotation (#1102), RawSvg(OLE/chart) first-load blank render (#1182)
+- Font fidelity: Hancom Dotum fallback → Noto Sans KR ExtraLight (#1234)
+- Hancom-style grid view & page borders, ghost-image fix (#1137, #1164)
+
+### HWPX save contract
+- Bookmark/Field dispatcher wiring, OLE chart, rotated picture, facing-page margin alternation, masterpage idRef (#1289, #1242)
+- Globally-unique body/table-cell paragraph ids (#1222), external image reference/bytes injection contracts (#1142/#1143)
+
+### rhwp-studio
+- Reduced input-edit re-render cost (narrow invalidation) (#1212), shared modal-dialog drag
+- mac window resize centering, find/goto dialog Enter handling, hit-test caret snapping (#1193, #1281, #1291)
+
+### Infra & docs
+- Dependabot coupled-dependency grouping, vite/puppeteer-core dev-dep bumps (#1214, #1216)
+- macOS headless Skia font-lookup hang prevention (task #823), Rust test warning cleanup (#1180)
+- Fixed ClickHere field-value file corruption (#1076)
+
+### Contributors
+@planet6897, @postmelee, @jangster77, @johndoekim, @Martinel2, @Mireutale, @chkwon, @oksure,
+@seo-rii, @xogh3198, @twoLoop-40, @lidge-jun, @humdrum00001010, @HaimLee-4869, @wonbbnote
+and Dependabot. Thank you.
+
+## [0.7.13] — 2026-05-26
+
+> Patch cycle following v0.7.12 (May 18–26) — focused on HWPX rendering/save compatibility, exam/public-agency document regressions, and multiple external contributor PR cherry-picks.
+
+### Key Changes
+
+- **HWPX → HWP save compatibility**
+  - Added/adjusted table and cell contracts: table-axis behavior, cell LIST_HEADER materialization, gradient `BORDER_FILL`, cell inner margins, and cell background image fill mode.
+  - Added memo control serialization, TOC field marker/page text output, page-number hide/restart controls, and related paragraph-control save paths.
+  - Resolved multiple Hancom corruption/interrupted-render cases across `hwpx-h-01/02/03`, `mel-001`, `aift`, `exam_kor`, and `exam_social` fixtures.
+- **HWPX rendering parity**
+  - Implemented/improved master pages (even/odd/last), headers/footers, paragraph numbering, textbox positioning/gradient/corner radius, paragraph borders, and exam passage boxes.
+  - Improved SVG and web-canvas visual parity for Hancom-converted fixtures such as `exam_kor.hwpx`, `exam_social.hwpx`, and `hwp3-sample16-hwp5.hwpx`.
+- **Pagination and layout fixes**
+  - Fixed HWPX `treat_as_char` table LINE_SEG lh over-inflation, nested table page splitting, picture pushdown/vpos double counting, multi-column endnote vpos, and bottom-overflow measurement consistency.
+  - Added analysis infrastructure for HWP3/HWP5-converted sample16 page breaks and paragraph spacing.
+- **rhwp-studio / extension UX**
+  - Improved TAC shape cursor movement and repeated-space navigation behavior.
+  - Chrome extension now guides users when local `file://` access is disabled and suppresses duplicate local downloads for HWP/HWPX files (#1131/#1132).
+- **Infrastructure and PR intake**
+  - Added CI runner disk-space mitigation (#1109).
+  - Reviewed/cherry-picked external PRs including #1077/#1078/#1080/#1081/#1117/#1120/#1125/#1132.
+  - Advanced CanvasKit glyph payload gating and COLRv1 glyph gradient replay.
+
+### Remaining
+
+- GitHub Actions outage may delay remote CI runs at v0.7.13 preparation time; local build/test/WASM validation is used as a fallback.
+- The `exam_social` HWPX → HWP page-3 odd-header textbox height issue remains split into a follow-up issue.
+
+## [0.7.12] — 2026-05-18
+
+> Patch cycle following v0.7.11 (May 12–18) — 19 external contributor PRs merged + @jangster77 PR series of 7 (#956–#968). 416 files / +64383 / -3323.
+
+### Key Changes
+
+- **Original Issue #952 (1 umbrella → 5 separated defects) completed** — @jangster77 diagnostic methodology (partial fix + clear separation):
+  - Issue 1 (#956): force paper-based page border outline — fixes `#920` bit-interpretation regression (verified against 5+ samples in Hancom viewer)
+  - Issue 2 (#958, #957): sample16 page 18 empty caption phantom advance fix
+  - Issue 3 (#961, #959): exam page 1 Q9 — horz_rel_to=Column picture out-of-column emit advance skip
+  - Issue 4 (#963, #960): exam page 2 cases formula off-by-one — include end-position TAC in last run of has_line_break line
+  - Issue 5 (#964, #962): exam page 2 example textbox inline equation duplicate emit block
+- **WMF SetTextAlign vertical bits fix** (#966, #965): `mode & VTA_TOP(=0)` always-true bug → WMF [MS-WMF] 2.1.2.18 spec compliance (ported root cause ~60 lines from large PR #918 Stage 33-A)
+- **HWP3 sample18 page count +2 inflate fix** (#968, #967): block standalone page for empty paragraph + [page break] + overflow case (v2 refinement — resolves aift.hwp snapshot regression)
+- **Release build LTO + codegen-units=1 + strip** (#818, #790): rhwp CLI -28% (14→10 MB) / WASM -6.5% (4.6→4.3 MB)
+- **rhwp-studio new features** (May 12–18): F5 block selection + F3 expand (#811) + menu hotkey infra (#810) + start with new page number (#809) + searchAllText API + rhwpDev.goto (#814) + Task #571 document compare/history split PR 1/3 (#799)
+
+## [0.7.11] — 2026-05-11
+
+> Patch cycle following v0.7.10 (May 10–11) — 30+ external contributor PRs merged. (CHANGELOG_EN.md retroactive supplement — omitted at v0.7.11 release)
+
+- **Skia native raster incremental progress** (Issue #536): P8 (#761) Layer IR contract hardening + P9 (#769) text replay parity + P11 (#797) Text IR v2 compatibility contract
+- **HWP3 native rendering** (#753): hwp3-sample10.hwp Oracle 763-page 8-stage fix + Git LFS pdf-large/ isolation
+- **rhwp-studio interactions** (#781/#786–#818): scrollbar drag + chord key Ctrl+N→Ctrl+M + Korean IME chord e.code detection + Alt/Option+Arrow word navigation (#794) + table cell drag context (#795)
+
+## [0.7.10] — 2026-05-06
+
+> Post-v0.7.9 patch cycle — Absorbed 7 external contributors (13 PR cherry-picks) + introduced AI pipeline / VLM integration + CLI binary release pipeline (Issues #608/#612).
+
+### New Features
+
+- **CLI binary releases** (Issue #608/#612, by [@almet](https://github.com/almet)'s request)
+  - 4-platform GitHub Release assets attached (Linux x86_64 / macOS x86_64+aarch64 / Windows x86_64)
+  - SHA-256 checksums included
+  - New `.github/workflows/release-binary.yml`
+- **PNG raster backend** (PR #599, [@seo-rii](https://github.com/seo-rii)) — render P4 stage
+  - Native Skia-based `PageLayerTree` → PNG export
+  - `native-skia` feature gate (zero impact on default build, opt-in)
+  - `DocumentCore::render_page_png_native(page)` API
+  - **AI pipeline + VLM (Vision-Language Model) integration introduced** (maintainer follow-up fixes)
+    - `--vlm-target claude` (1568 longest edge / 1.15 MP, Claude Vision compliant)
+    - `--scale <factor>` / `--max-dimension <px>` (auto scale calculation)
+    - `export-png` CLI command + manual (Korean + English dual)
+    - Korean font fallback chain + per-character fallback (whitespace tofu fix) + `--font-path` dynamic font loading
+
+### External PR cherry-picks (13 PRs / 7 contributors)
+
+#### [@planet6897](https://github.com/planet6897) / Jaeook Ryu — collaborative flow
+
+- PR #587 — HWP 5.0 spec 0x18/0x1E swap (hyphen ↔ non-breaking space)
+- PR #589 (Task #511 v2 + #554) — HWP3 Square wrap supplementary fix + conversion identification heuristic
+- PR #561 (Task #548) — Cell inline TAC Shape margin + indent
+- PR #564 (Task #521) — TAC table outer_margin_bottom missing
+- PR #570 (Task #568) — Inline table + equation paragraph right-shift
+- PR #575 (Task #573) — Choice cell fraction paragraph routing
+- PR #580 (Task #577) — Cell-internal standalone TopAndBottom image 1-line offset
+- PR #584 (Task #574) — HY견명조 heavy display misclassification (TDD)
+- PR #592 (Task #588) — exam_eng.hwp p7 arrow missing (PUA U+F003B mapping)
+- PR #593 (Task #590) — Square wrap table horz_rel_to=Column attribute
+- PR #567 (Task #565) — Inline equation render-missing
+
+#### [@oksure](https://github.com/oksure) (Hyunwoo Park)
+
+- PR #600 (closes #513) — Supplementary PUA-A SVG output fix
+
+#### [@seo-rii](https://github.com/seo-rii)
+
+- PR #599 (refs #536) — native Skia PNG raster backend
+
+### Maintainer Fixes
+
+- 5 Skia font area fixes (PR #599 follow-up, `876d820`): Korean font fallback chain / `--font-path` dynamic loading / per-character fallback / VLM options / `export-png` CLI
+
+### Infrastructure
+
+- CI build stability (`[[example]] required-features`)
+- Wide pagination regression sweep tooling (164 fixtures / 1,614 pages auto-verification)
+
+### Follow-up Issues
+
+- [#613](https://github.com/edwardkim/rhwp/issues/613) — VLM preset expansion
+- [#614](https://github.com/edwardkim/rhwp/issues/614) — DPI metadata option
+- [#615](https://github.com/edwardkim/rhwp/issues/615) — `pua_oldhangul.rs` Hancom alignment
+- [#598](https://github.com/edwardkim/rhwp/issues/598) — rhwp-studio footnote deletion (open)
+
+### Remaining PRs (deferred to v0.7.11)
+
+- PR #601, #602 (@oksure) / PR #607 (@dicebattle) / PR #609 (@jangster77) / PR #611 (@kihyunnn)
+
+---
+
 ## [0.7.9] — 2026-05-01
 
 > Post-v0.7.8 cycle — Task #501 (Hancom defensive logic for cell.padding) + cherry-pick of PR #428/#494/#478/#498 + 4 external contributors

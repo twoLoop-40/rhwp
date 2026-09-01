@@ -9,7 +9,7 @@
 //! - `<c:valAx>`에서 `<c:axId>`와 `<c:axPos>` 수집 → axId→primary/secondary 매핑 생성
 //! - 파싱 완료 시 시리즈의 axis_ids를 primary/secondary 집합과 비교해 axis_group 지정
 
-use super::{OoxmlChart, OoxmlChartType, OoxmlSeries};
+use super::{BarGrouping, OoxmlChart, OoxmlChartType, OoxmlSeries};
 use quick_xml::events::Event;
 use quick_xml::Reader;
 use std::collections::HashMap;
@@ -25,10 +25,10 @@ struct ParseState {
     in_chart_title: bool,
     in_v: bool,
     in_a_t: bool,
-    in_sp_pr: bool,          // c:spPr — 시리즈/figure의 shape properties
-    in_solid_fill: bool,     // a:solidFill
-    in_ln: bool,             // a:ln (stroke)
-    in_num_cache: bool,      // c:numCache — formatCode 파싱
+    in_sp_pr: bool,      // c:spPr — 시리즈/figure의 shape properties
+    in_solid_fill: bool, // a:solidFill
+    in_ln: bool,         // a:ln (stroke)
+    in_num_cache: bool,  // c:numCache — formatCode 파싱
     bar_dir: Option<BarDir>,
     // 현재 파싱 중인 plot 블록 (barChart/lineChart/pieChart) 안에 있는지
     cur_plot_type: Option<OoxmlChartType>,
@@ -85,7 +85,10 @@ pub fn parse_chart_xml(xml: &[u8]) -> Option<OoxmlChart> {
     }
 
     // 가로/세로 막대 최종 분기 (chart_type이 Column 상태면 barDir로 확정)
-    if matches!(chart.chart_type, OoxmlChartType::Column | OoxmlChartType::Bar) {
+    if matches!(
+        chart.chart_type,
+        OoxmlChartType::Column | OoxmlChartType::Bar
+    ) {
         if let Some(BarDir::Bar) = state.bar_dir {
             chart.chart_type = OoxmlChartType::Bar;
         } else {
@@ -109,22 +112,34 @@ pub fn parse_chart_xml(xml: &[u8]) -> Option<OoxmlChart> {
     let mut primary_axid: Option<String> = None;
     let mut secondary_axid: Option<String> = None;
     // 순회 순서를 안정적으로 하기 위해 정렬
-    let mut entries: Vec<(String, String)> = state.val_ax_map.iter()
-        .map(|(k, v)| (k.clone(), v.clone())).collect();
+    let mut entries: Vec<(String, String)> = state
+        .val_ax_map
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
     entries.sort_by(|a, b| a.0.cmp(&b.0));
     for (axid, pos) in &entries {
         match pos.as_str() {
             "l" | "b" => {
-                if primary_axid.is_none() { primary_axid = Some(axid.clone()); }
-                else if secondary_axid.is_none() { secondary_axid = Some(axid.clone()); }
+                if primary_axid.is_none() {
+                    primary_axid = Some(axid.clone());
+                } else if secondary_axid.is_none() {
+                    secondary_axid = Some(axid.clone());
+                }
             }
             "r" | "t" => {
-                if secondary_axid.is_none() { secondary_axid = Some(axid.clone()); }
-                else if primary_axid.is_none() { primary_axid = Some(axid.clone()); }
+                if secondary_axid.is_none() {
+                    secondary_axid = Some(axid.clone());
+                } else if primary_axid.is_none() {
+                    primary_axid = Some(axid.clone());
+                }
             }
             _ => {
-                if primary_axid.is_none() { primary_axid = Some(axid.clone()); }
-                else if secondary_axid.is_none() { secondary_axid = Some(axid.clone()); }
+                if primary_axid.is_none() {
+                    primary_axid = Some(axid.clone());
+                } else if secondary_axid.is_none() {
+                    secondary_axid = Some(axid.clone());
+                }
             }
         }
     }
@@ -169,6 +184,22 @@ fn handle_start(e: &quick_xml::events::BytesStart, chart: &mut OoxmlChart, st: &
             st.cur_plot_ax_ids.clear();
             st.cur_plot_series_start = chart.series.len();
         }
+        b"bar3DChart" => {
+            // 3D 막대 — 2D 근사(C1a #1453). barDir 핸들러가 col/bar를 그대로 채워
+            // 파싱 종료 후처리가 Column↔Bar를 확정한다.
+            chart.chart_type = OoxmlChartType::Column;
+            st.cur_plot_type = Some(OoxmlChartType::Column);
+            st.cur_plot_ax_ids.clear();
+            st.cur_plot_series_start = chart.series.len();
+        }
+        b"pie3DChart" | b"ofPieChart" => {
+            // 3D 원형 / ofPie — 단일 원형으로 2D 근사(C1a #1453).
+            // 입체감·보조플롯(원형대원형의 2차 원, 원형대막대의 막대)은 후속(C2).
+            chart.chart_type = OoxmlChartType::Pie;
+            st.cur_plot_type = Some(OoxmlChartType::Pie);
+            st.cur_plot_ax_ids.clear();
+            st.cur_plot_series_start = chart.series.len();
+        }
         b"barDir" => {
             if let Some(val) = attr_val(e, "val") {
                 st.bar_dir = match val.as_str() {
@@ -176,6 +207,21 @@ fn handle_start(e: &quick_xml::events::BytesStart, chart: &mut OoxmlChart, st: &
                     "col" => Some(BarDir::Col),
                     _ => None,
                 };
+            }
+        }
+        b"grouping" => {
+            // 막대(bar/bar3D) plot의 grouping만 채택 (line의 grouping은 C1d 후속).
+            if matches!(
+                st.cur_plot_type,
+                Some(OoxmlChartType::Column | OoxmlChartType::Bar)
+            ) {
+                if let Some(val) = attr_val(e, "val") {
+                    chart.grouping = match val.as_str() {
+                        "stacked" => BarGrouping::Stacked,
+                        "percentStacked" => BarGrouping::PercentStacked,
+                        _ => BarGrouping::Clustered,
+                    };
+                }
             }
         }
         b"ser" => {
@@ -205,7 +251,9 @@ fn handle_start(e: &quick_xml::events::BytesStart, chart: &mut OoxmlChart, st: &
                 if let Some(val) = attr_val(e, "val") {
                     if let Some(rgb) = parse_rgb_hex(&val) {
                         if let Some(ser) = st.cur_series.as_mut() {
-                            if ser.color.is_none() { ser.color = Some(rgb); }
+                            if ser.color.is_none() {
+                                ser.color = Some(rgb);
+                            }
                         }
                     }
                 }
@@ -216,7 +264,9 @@ fn handle_start(e: &quick_xml::events::BytesStart, chart: &mut OoxmlChart, st: &
                 if let Some(val) = attr_val(e, "val") {
                     if let Some(rgb) = scheme_color(&val) {
                         if let Some(ser) = st.cur_series.as_mut() {
-                            if ser.color.is_none() { ser.color = Some(rgb); }
+                            if ser.color.is_none() {
+                                ser.color = Some(rgb);
+                            }
                         }
                     }
                 }
@@ -322,7 +372,8 @@ fn handle_end(name: &[u8], chart: &mut OoxmlChart, st: &mut ParseState) {
                 st.cur_val_ax_pos = None;
             }
         }
-        b"barChart" | b"lineChart" | b"pieChart" => {
+        b"barChart" | b"lineChart" | b"pieChart" | b"bar3DChart" | b"pie3DChart"
+        | b"ofPieChart" => {
             // plot 종료 — 이 plot에 속한 시리즈에 axIds 복사
             let start = st.cur_plot_series_start;
             for ser in chart.series.iter_mut().skip(start) {
@@ -346,7 +397,9 @@ fn attr_val(e: &quick_xml::events::BytesStart, key: &str) -> Option<String> {
 
 fn parse_rgb_hex(s: &str) -> Option<u32> {
     let t = s.trim().trim_start_matches('#');
-    if t.len() != 6 { return None; }
+    if t.len() != 6 {
+        return None;
+    }
     u32::from_str_radix(t, 16).ok()
 }
 
@@ -459,5 +512,83 @@ mod tests {
     #[test]
     fn test_parse_malformed() {
         assert!(parse_chart_xml(b"not xml").is_none());
+    }
+
+    // --- C1a (#1453): 3D막대·3D원형·ofPie 라우팅 ---
+
+    #[test]
+    fn test_parse_bar3d_col() {
+        // bar3DChart + barDir=col → Column (세로 3D 막대 2D 근사)
+        let xml = br#"<?xml version="1.0"?><c:chartSpace xmlns:c="x" xmlns:a="y"><c:chart><c:plotArea><c:bar3DChart><c:barDir val="col"/><c:ser><c:val><c:numCache><c:pt idx="0"><c:v>100</c:v></c:pt><c:pt idx="1"><c:v>80</c:v></c:pt></c:numCache></c:val></c:ser></c:bar3DChart></c:plotArea></c:chart></c:chartSpace>"#;
+        let c = parse_chart_xml(xml).expect("parse OK");
+        assert_eq!(c.chart_type, OoxmlChartType::Column);
+        assert_eq!(c.series[0].values, vec![100.0, 80.0]);
+    }
+
+    #[test]
+    fn test_parse_bar3d_bar() {
+        // bar3DChart + barDir=bar → Bar (가로 3D 막대 2D 근사)
+        let xml = br#"<?xml version="1.0"?><c:chartSpace xmlns:c="x" xmlns:a="y"><c:chart><c:plotArea><c:bar3DChart><c:barDir val="bar"/><c:ser><c:val><c:numCache><c:pt idx="0"><c:v>5</c:v></c:pt></c:numCache></c:val></c:ser></c:bar3DChart></c:plotArea></c:chart></c:chartSpace>"#;
+        let c = parse_chart_xml(xml).expect("parse OK");
+        assert_eq!(c.chart_type, OoxmlChartType::Bar);
+    }
+
+    #[test]
+    fn test_parse_pie3d() {
+        // pie3DChart → Pie (3D 원형 2D 근사)
+        let xml = br#"<?xml version="1.0"?><c:chartSpace xmlns:c="x" xmlns:a="y"><c:chart><c:plotArea><c:pie3DChart><c:ser><c:val><c:numCache><c:pt idx="0"><c:v>30</c:v></c:pt><c:pt idx="1"><c:v>70</c:v></c:pt></c:numCache></c:val></c:ser></c:pie3DChart></c:plotArea></c:chart></c:chartSpace>"#;
+        let c = parse_chart_xml(xml).expect("parse OK");
+        assert_eq!(c.chart_type, OoxmlChartType::Pie);
+        assert_eq!(c.series[0].values, vec![30.0, 70.0]);
+    }
+
+    #[test]
+    fn test_parse_ofpie() {
+        // ofPieChart → Pie (원형대원형/원형대막대 → 단일 원형 근사)
+        let xml = br#"<?xml version="1.0"?><c:chartSpace xmlns:c="x" xmlns:a="y"><c:chart><c:plotArea><c:ofPieChart><c:ofPieType val="pie"/><c:ser><c:val><c:numCache><c:pt idx="0"><c:v>40</c:v></c:pt><c:pt idx="1"><c:v>25</c:v></c:pt><c:pt idx="2"><c:v>35</c:v></c:pt></c:numCache></c:val></c:ser></c:ofPieChart></c:plotArea></c:chart></c:chartSpace>"#;
+        let c = parse_chart_xml(xml).expect("parse OK");
+        assert_eq!(c.chart_type, OoxmlChartType::Pie);
+        assert_eq!(c.series[0].values, vec![40.0, 25.0, 35.0]);
+    }
+
+    // --- C1a Part B (#1453): 막대 누적 grouping 파싱 ---
+
+    fn bar_xml_with_grouping(plot: &str, grouping: &str) -> String {
+        format!(
+            r#"<?xml version="1.0"?><c:chartSpace xmlns:c="x" xmlns:a="y"><c:chart><c:plotArea><c:{plot}><c:barDir val="col"/><c:grouping val="{grouping}"/><c:ser><c:val><c:numCache><c:pt idx="0"><c:v>3</c:v></c:pt></c:numCache></c:val></c:ser></c:{plot}></c:plotArea></c:chart></c:chartSpace>"#
+        )
+    }
+
+    #[test]
+    fn test_parse_grouping_stacked() {
+        let c = parse_chart_xml(bar_xml_with_grouping("barChart", "stacked").as_bytes())
+            .expect("parse OK");
+        assert_eq!(c.grouping, BarGrouping::Stacked);
+    }
+
+    #[test]
+    fn test_parse_grouping_percent_stacked() {
+        // bar3DChart 경로에서도 grouping 파싱
+        let c = parse_chart_xml(bar_xml_with_grouping("bar3DChart", "percentStacked").as_bytes())
+            .expect("parse OK");
+        assert_eq!(c.grouping, BarGrouping::PercentStacked);
+    }
+
+    #[test]
+    fn test_parse_grouping_clustered_default() {
+        // clustered 명시 → Clustered. grouping 없는 차트도 기본 Clustered.
+        let c = parse_chart_xml(bar_xml_with_grouping("barChart", "clustered").as_bytes())
+            .expect("parse OK");
+        assert_eq!(c.grouping, BarGrouping::Clustered);
+        let c2 = parse_chart_xml(BAR_XML.as_bytes()).expect("parse OK");
+        assert_eq!(c2.grouping, BarGrouping::Clustered);
+    }
+
+    #[test]
+    fn test_parse_grouping_line_ignored() {
+        // line plot의 grouping은 막대 grouping에 반영되지 않음 (C1d 후속)
+        let xml = r#"<?xml version="1.0"?><c:chartSpace xmlns:c="x" xmlns:a="y"><c:chart><c:plotArea><c:lineChart><c:grouping val="stacked"/><c:ser><c:val><c:numCache><c:pt idx="0"><c:v>3</c:v></c:pt></c:numCache></c:val></c:ser></c:lineChart></c:plotArea></c:chart></c:chartSpace>"#;
+        let c = parse_chart_xml(xml.as_bytes()).expect("parse OK");
+        assert_eq!(c.grouping, BarGrouping::Clustered);
     }
 }

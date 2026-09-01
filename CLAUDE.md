@@ -9,6 +9,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - WebAssembly(WASM)로 빌드하여 웹브라우저에서 HWP 문서를 볼 수 있도록 함
 - 한컴 웹기안기의 오픈소스 대안
 
+### 파일 포맷별 파서 구조
+
+공통 문서 모델은 `src/model/document.rs`의 `Document` 구조체이다. 모든 포맷 파서는 이 하나의 `Document` IR로 변환하여 반환한다.
+
+| 포맷 | 파서 위치 | 출력 IR |
+|------|----------|---------|
+| HWPX (ZIP+XML) | `src/parser/hwpx/` | `Document` |
+| HWP5 (OLE 복합) | `src/parser/hwp5/` | `Document` |
+| HWP3 (고전 바이너리) | `src/parser/hwp3/` | `Document` |
+
+> 역사적으로 `Document` 모델은 HWP5 형식의 구조를 기반으로 설계되었으며, HWPX는 같은 의미의 XML 포맷이다. HWP3는 고전 포맷이지만 동일한 `Document` IR로 변환한다.
+
+**HWP3 파서 규칙**: `src/parser/hwp3/` 내부에서 HWP3 바이너리를 읽어 `Document` IR로 변환하여 반환한다. HWP3 전용 로직은 **반드시 `src/parser/hwp3/` 안에서만** 구현한다. 렌더러(`src/renderer/`), 레이아웃(`src/renderer/layout.rs`), 문서 코어(`src/document_core/`) 등 공통 모듈에 HWP3 전용 분기를 추가하지 않는다.
+
 ## 클로드 코드 사용 시 주의사항
 
 이 프로젝트는 **하이퍼-워터폴** 방법론을 적용한다. 클로드 코드의 기본 동작(빠른 실행, 자율 수정)과 충돌이 발생할 수 있으므로 반드시 숙지한다.
@@ -199,11 +213,31 @@ rhwp ir-diff sample.hwpx sample.hwp                    # 전체 비교
 rhwp ir-diff sample.hwpx sample.hwp -s 0 -p 810        # 특정 문단만 비교
 rhwp ir-diff sample.hwpx sample.hwp 2>&1 | grep "\[PS " # ParaShape 차이만
 rhwp ir-diff sample.hwpx sample.hwp 2>&1 | tail -1      # 차이 건수만
+rhwp ir-diff sample.hwpx sample.hwp --summary           # 카테고리별 카운트
+rhwp ir-diff sample.hwpx sample.hwp --max-lines 50      # 출력 50줄 제한
 ```
 
-비교 항목: text, char_count, char_offsets, char_shapes, line_segs, controls, tab_extended, ParaShape(여백/줄간격/탭), TabDef(위치/종류/채움).
+비교 항목: text, char_count, char_offsets, char_shapes, line_segs, controls(타입+속성), tab_extended, ParaShape(여백/줄간격/탭), TabDef(위치/종류/채움).
+표: page_break, outer_margin, treat_as_char, wrap, size, v_offset/h_offset 비교.
+그림/도형: treat_as_char, wrap, size, v_offset/h_offset, vert_rel/horz_rel 비교.
 
 상세 매뉴얼: `mydocs/manual/ir_diff_command.md`
+
+### HWPX roundtrip 검증 (`hwpx-roundtrip`)
+
+HWPX 파일을 parse→serialize→재parse 하여 IR 뼈대 보존 + 패키지(ZIP) 구조 + 2-round 안정성을 검사한다.
+
+```bash
+rhwp hwpx-roundtrip sample.hwpx                                  # 단일 파일 검사
+rhwp hwpx-roundtrip --batch samples/hwpx                         # 폴더 전수 (재귀)
+rhwp hwpx-roundtrip --batch samples/hwpx -o output/poc/task1315  # inventory.tsv + *.rt.hwpx 산출
+```
+
+하드 실패 존재 시 종료 코드 1. `samples/hwpx/` 전수 회귀 게이트는 `cargo test --test hwpx_roundtrip_baseline` (신규 샘플 자동 포함, xfail/제외 등급은 테스트 파일의 상수 참조).
+
+> 주의: baseline 통과 = 구조(뼈대) 보존이며 시각 충실도 보장이 아니다.
+
+상세 매뉴얼: `mydocs/manual/hwpx_roundtrip_baseline.md`
 
 ### 디버깅 워크플로우
 
@@ -227,7 +261,41 @@ HWPX↔HWP 불일치 디버깅 시 추가 단계:
 
 ### 예제 폴더
 
-- `samples/` - 테스트용 HWP 파일
+- `samples/` - 테스트용 HWP/HWPX 파일 (git tracked 영구 보존)
+- `pdf/` - 한글 **2022** 편집기 PDF 변환본 (PR #670, 시각 정합성 비교 권위 자료, < 50 MB)
+- `pdf-2020/` - (예정) 한글 2020 편집기 PDF 변환본 (< 50 MB)
+- `pdf-2010/` - (예정) 한글 2010 편집기 PDF 변환본 (< 50 MB)
+- `pdf-large/` - **대용량 PDF (≥ 50 MB, Git LFS 추적)** — GitHub 권장 50 MB 초과 PDF 영역 영역 격리 (PR #753, hwp3-sample10 영역)
+
+### PDF 권위 자료 명명 규약
+
+| 폴더 | 한컴 버전 | 명명 패턴 | 처리 |
+|------|----------|----------|------|
+| `pdf/` | 한글 2022 | `pdf/{원본 stem}-2022.pdf` | 일반 git |
+| `pdf-2020/` | 한글 2020 | `pdf-2020/{원본 stem}-2020.pdf` | 일반 git |
+| `pdf-2010/` | 한글 2010 | `pdf-2010/{원본 stem}-2010.pdf` | 일반 git |
+| `pdf-large/` | 모든 버전 | `pdf-large/{원본 stem}-{버전}.pdf` | **Git LFS** |
+
+원본 파일이 하위 폴더 (`samples/basic/` / `samples/hwpx/`) 에 있는 경우 PDF 도 동일 하위 폴더 구조 유지. 상세는 `pdf/README.md` / `pdf-large/README.md`.
+
+50 MB 초과 PDF 는 반드시 `pdf-large/` 영역 영역 배치 — `.gitattributes` 의 `pdf-large/**/*.pdf filter=lfs` 패턴 영역 영역 자동 LFS 변환. Clone / Fork 시 LFS 미설치 환경 영역 영역 placeholder 만 진입 영역 영역, 실제 PDF 영역 영역 `git lfs install && git lfs pull` 영역 영역 받음.
+
+### PDF 권위 등급 (컨트리뷰터 환경별)
+
+본 프로젝트의 시각 판정 권위 영역은 컨트리뷰터 환경에 따라 다르다 (`reference_authoritative_hancom` 메모리 룰 정합):
+
+**Windows + 한컴 편집기 환경**:
+- 1차 정답지: 한글 2010 / 2020 / 2022 **편집기** 직접 출력 (시각 판정)
+- 보조: `pdf/`, `pdf-2020/`, `pdf-2010/` 의 PDF
+
+**macOS / Linux 환경 (한컴 편집기 미접근)**:
+- 1차 정답지: `pdf/` (한글 2022) 또는 `pdf-2020/` (한글 2020) PDF
+- 등급 미달: `pdf-2010/` (한글 2010 PDF) — 보조 자료, 정답지 등급 미달
+
+**모든 환경 공통 — 정답지 아님**:
+- 한컴 뷰어 출력
+- macOS 인쇄 / 외부 변환
+- HWP5 v2024 변환본 등 한컴 변환 산출물 (비교 보조 자료)
 
 ### 출력 폴더
 
@@ -238,6 +306,7 @@ HWPX↔HWP 불일치 디버깅 시 추가 단계:
 | `output/re/` | 재현검증용 샘플 (`re_sample_gen.rs` 테스트 자동 생성) |
 | `output/svg/` | SVG 내보내기 기본 출력 (`rhwp export-svg`) |
 | `output/debug/` | 디버그 오버레이 HTML (`rhwp export-svg --debug-overlay`) |
+| `output/poc/` | POC, 작업지시자 시각 판정, HWPX→HWP inventory/probe 산출물 |
 
 ### E2E 테스트
 
@@ -270,23 +339,23 @@ node e2e/text-flow.test.mjs --mode=host
 코드와 대화에서 혼동을 방지하기 위해, 아래 명칭을 통일하여 사용한다.
 
 ```
-┌─────────────────────────────────────────────────┐
-│  메뉴바 (#menu-bar)                              │
-│  파일 | 편집 | 보기 | 입력 | 서식 | 쪽 | 표      │
-├─────────────────────────────────────────────────┤
-│  도구 상자 (#icon-toolbar)                        │
-│  [오려두기][복사][붙이기] | [글자모양][문단모양] | … │
-├─────────────────────────────────────────────────┤
-│  서식 도구 모음 (#style-bar)                      │
-│  [스타일▼][글꼴▼][크기] | 가가간가 | ◀ ≡ ▶ ≡≡ | ⇕  │
-├─────────────────────────────────────────────────┤
-│                                                 │
-│  편집 영역 (#scroll-container)                    │
-│                                                 │
-├─────────────────────────────────────────────────┤
-│  상태 표시줄 (#status-bar)                        │
-│  1/1쪽 | 구역:1/1 | 삽입 |           100% [−][+] │
-└─────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────┐
+│  메뉴바 (#menu-bar)                                   │
+│  파일 | 편집 | 보기 | 입력 | 서식 | 쪽 | 표           │
+├───────────────────────────────────────────────────────┤
+│  도구 상자 (#icon-toolbar)                            │
+│  [오려두기][복사][붙이기] | [글자모양][문단모양] | …  │
+├───────────────────────────────────────────────────────┤
+│  서식 도구 모음 (#style-bar)                          │
+│  [스타일▼][글꼴▼][크기] | 가가간가 | ◀ ≡ ▶ ≡≡ | ⇕     │
+├───────────────────────────────────────────────────────┤
+│                                                       │
+│  편집 영역 (#scroll-container)                        │
+│                                                       │
+├───────────────────────────────────────────────────────┤
+│  상태 표시줄 (#status-bar)                            │
+│  1/1쪽 | 구역:1/1 | 삽입 |          100% [−][+]       │
+└───────────────────────────────────────────────────────┘
 ```
 
 | 한국어 명칭 | HTML id/class | 설명 |
@@ -396,3 +465,7 @@ gh pr create --repo edwardkim/rhwp --base devel --head {contributor}:feature/my-
 ### 작업 규칙
 
 - 작업 시간의 시작과 종료는 작업지시자가 결정한다. 클로드가 임의로 작업 종료를 제안하거나 시간을 한정하지 않는다.
+- 기능 변경과 포맷 변경은 같은 커밋에 섞지 않는다.
+- 전체 `cargo fmt --all`은 포맷 전용 이슈/브랜치에서만 실행한다.
+- 기능/조사 브랜치에서는 새로 만들거나 직접 수정한 파일만 필요한 범위에서 정리하고, 무관한 rustfmt diff를 만들지 않는다.
+- Rust formatter 기준은 저장소 루트의 `rust-toolchain.toml`과 `rustfmt.toml`을 따른다.
