@@ -534,10 +534,11 @@ impl EqParser {
             } else {
                 self.parse_single_or_group()
             };
-            return EqNode::FontStyle {
+            let node = EqNode::FontStyle {
                 style,
                 body: Box::new(body),
             };
+            return self.try_parse_scripts(node);
         }
 
         // Unicode 기호 매핑 — 함수보다 우선 (hwpeq inf=∞ vs LaTeX \inf=infimum 충돌 방지)
@@ -708,12 +709,28 @@ impl EqParser {
         }
     }
 
+    /// 한컴 canonical 스타일 첨자 `^{it}{C}` / `_{rm}{n}` 파싱.
+    /// 첫 그룹은 payload가 아니라 글꼴 지정자이고, 바로 뒤 그룹이 실제 payload다.
+    fn parse_styled_script_atom(&mut self) -> EqNode {
+        let first = self.parse_single_or_group();
+        let EqNode::FontStyle { style, body } = first else {
+            return first;
+        };
+        if matches!(body.as_ref(), EqNode::Empty) && self.current_type() == TokenType::LBrace {
+            return EqNode::FontStyle {
+                style,
+                body: Box::new(self.parse_group()),
+            };
+        }
+        EqNode::FontStyle { style, body }
+    }
+
     /// 무브레이스 아래첨자/하한 operand 파싱 (#1304).
     /// `원자 (공백없는 관계연산자 원자)*` 패턴으로 하나의 operand 를 묶는다.
     /// `sum_k=1 ^6` 의 하한이 `k=1` 전체가 되도록 한다.
     /// 위첨자(`^`)에는 적용하지 않는다 — `x^2=4` 류 위첨자 등식 보호.
     fn parse_script_operand(&mut self) -> EqNode {
-        let first = self.parse_single_or_group();
+        let first = self.parse_styled_script_atom();
         if !self.is_tight_relational() {
             return first;
         }
@@ -763,7 +780,7 @@ impl EqParser {
                 has_sub = true;
             } else if ty == TokenType::Superscript && !has_sup {
                 self.pos += 1;
-                sup = Some(self.parse_single_or_group());
+                sup = Some(self.parse_styled_script_atom());
                 has_sup = true;
             } else {
                 break;
@@ -1659,6 +1676,26 @@ mod tests {
         // 회귀 가드: x^2 는 영향 없음
         let x2 = format!("{:?}", parse("x^2"));
         assert!(x2.contains("Superscript"), "x^2 정상: {x2}");
+    }
+
+    /// 한컴이 저장한 여집합 표기 `it{B}^{it}{C}`에서 `{it}`는 지수의 글꼴 지정자이고
+    /// 뒤 `{C}`가 실제 payload다. C가 baseline sibling으로 풀리면 `BC`로 오렌더된다.
+    #[test]
+    fn styled_script_payload_binds_to_base() {
+        let ast = parse("it{B}^{it}{C}");
+        match ast {
+            EqNode::Superscript { base, sup } => {
+                assert!(
+                    matches!(base.as_ref(), EqNode::FontStyle { style: FontStyleKind::Italic, body }
+                        if matches!(body.as_ref(), EqNode::Text(text) if text == "B"))
+                );
+                assert!(
+                    matches!(sup.as_ref(), EqNode::FontStyle { style: FontStyleKind::Italic, body }
+                        if matches!(body.as_ref(), EqNode::Text(text) if text == "C"))
+                );
+            }
+            other => panic!("expected styled Superscript, got {other:?}"),
+        }
     }
 
     #[test]

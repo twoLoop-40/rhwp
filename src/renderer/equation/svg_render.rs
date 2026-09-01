@@ -851,6 +851,24 @@ mod tests {
     }
 
     #[test]
+    fn styled_script_payload_renders_as_superscript() {
+        let svg = render_eq("it{A} SMALLINTER it{B}^{it}{C}");
+        let base = svg
+            .lines()
+            .find(|line| line.contains(">B<"))
+            .expect("B glyph");
+        let complement = svg
+            .lines()
+            .find(|line| line.contains(">C<"))
+            .expect("C glyph");
+        assert!(base.contains("font-size=\"20.00\""), "base size: {base}");
+        assert!(
+            complement.contains("font-size=\"14.00\""),
+            "complement must use script size: {complement}"
+        );
+    }
+
+    #[test]
     fn test_cjk_never_italic() {
         // 한글은 default italic=true 영역에서도 italic 미적용
         let svg = render_eq("평점");
